@@ -1,0 +1,50 @@
+// Query Fields - leave as "" or null to skip
+let targetAccountUpn = "";
+let targetIpAddress = "";
+let targetUserAgent = "";
+let targetSessionId = "";
+// Grab and bin by Timestamp
+EntraIdSignInEvents
+| where isempty(targetAccountUpn) or AccountUpn contains targetAccountUpn
+| where isempty(targetIpAddress) or IPAddress contains targetIpAddress
+| where isempty(targetUserAgent) or UserAgent contains targetUserAgent
+| where isempty(targetSessionId) or SessionId contains targetSessionId
+| where LogonType == "[\"interactiveUser\"]"
+| extend HourBin = bin(Timestamp, 1h)
+| extend PolicyDetails = parse_json(ConditionalAccessPolicies)
+| mv-expand PolicyDetails
+| extend ConditionalAccessSuccess = PolicyDetails.result
+| where ConditionalAccessSuccess != "notApplied" 
+  and ConditionalAccessSuccess != "notEnabled"
+  and ConditionalAccessSuccess !contains "reportOnly"
+  and ConditionalAccessSuccess !contains "unknown"
+| extend ApplicationLoginStatus = iif(ErrorCode == 0, "success", iif(ErrorCode == 50074, "interupted", "failure"))
+| summarize 
+    SessionStart = min(Timestamp),
+    SessionEnd = max(Timestamp),
+    IPAddress = any(IPAddress),
+    DeviceName = any(DeviceName),
+    UserAgent = any(UserAgent),
+    NetworkLocationDetails = any(NetworkLocationDetails),
+    DeviceTrustType = any(DeviceTrustType),
+    IsManaged = any(IsManaged),
+    IsCompliant = any(IsCompliant),
+    AllPolicyDetails = make_list(PolicyDetails),
+    ConditionalAccessStatus = any(ConditionalAccessSuccess)
+  by AccountUpn, HourBin, ApplicationLoginStatus, Application, AuthenticationRequirement
+| project 
+    SessionStart,
+    SessionEnd,
+    AccountUpn,
+    IPAddress,
+    Application,
+    ApplicationLoginStatus,
+    DeviceName,
+    DeviceTrustType,
+    IsManaged,
+    IsCompliant,
+    UserAgent,
+    AuthenticationRequirement,
+    ConditionalAccessStatus,
+    AllPolicyDetails
+| sort by SessionStart
