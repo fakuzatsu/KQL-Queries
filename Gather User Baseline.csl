@@ -1,0 +1,43 @@
+//
+// Modify User here
+let UserID = ""; // <----
+//
+// 1) Init CIDRASN
+let CIDRASN = (externaldata (CIDR:string, CIDRASN:int, CIDRASNName:string)
+['https://firewalliplists.gypthecat.com/lists/kusto/kusto-cidr-asn.csv.zip']
+with (ignoreFirstRecord=true));
+// 2) Grab EntraIdSignInEvents
+let SignInsWindow = materialize(
+    EntraIdSignInEvents
+    | where Timestamp between (ago(30d)..now())
+    | where LogonType == "[\"interactiveUser\"]" or LogonType == ""
+    | where AccountUpn == UserID
+    | project AccountUpn, RequestId, Timestamp, Application, UserAgent, IPAddress, ErrorCode, IsManaged
+);
+// 3a) Find historical sign-in events for the user with relevant properties
+let SignInsBase =
+    SignInsWindow
+    | where isnull(ErrorCode) or ErrorCode == 0
+    | where Timestamp between (ago(30d)..now())
+    | summarize
+        UserBaselineIPs  = make_set(IPAddress),
+        UserBaselineUAs  = make_set(UserAgent),
+        UserBaselineApps = make_set(Application)
+    by AccountUpn
+    | project AccountUpn, UserBaselineIPs, UserBaselineUAs, UserBaselineApps;
+// 3b) Derive ASN/CIDR sets from the unique IPs
+let BaseASNFromIPs =
+    SignInsBase
+    | mv-expand IP = UserBaselineIPs to typeof(string)
+    | distinct AccountUpn, IP
+    | evaluate ipv4_lookup(CIDRASN, IP, CIDR, return_unmatched=true)
+    | summarize
+        UserBaselineASNs  = make_set(CIDRASN, 100),
+        UserBaselineCIDRs = make_set(CIDR, 100)
+      by AccountUpn;
+//
+// 4) Merge User baseline back into alerts
+SignInsBase
+| join kind=leftouter BaseASNFromIPs on AccountUpn
+| project-away 
+    AccountUpn1
